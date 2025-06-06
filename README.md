@@ -175,61 +175,191 @@ By making the entire `~/.config/config-manager` directory your repository, you g
 
 ## Working with Templates
 
-Config Manager supports dynamic templates that can adapt to different environments.
+Config Manager supports dynamic templates that automatically adapt to different environments and machines. Instead of manually editing config files on each computer, templates fill in the details automatically.
 
-### Creating Templates
+### What Templates Do
 
-1. **Create a template directory**:
-   ```bash
-   mkdir -p ~/.config/config-manager/templates
-   ```
+Templates let you create **one config file** that automatically adapts to different computers. For example, your `.gitconfig` can automatically use different email addresses for work vs personal machines, while keeping everything else the same.
 
-2. **Create template files** with `.tmpl`, `.template`, or `.tpl` extensions:
-   ```bash
-   # Example: gitconfig.tmpl
-   [user]
-       name = {{ .user }}
-       email = {{ .user }}@{{ .company }}.com
-   [core]
-       editor = {{ .editor }}
-   ```
+### Complete Example: Git Configuration
+
+Let's create a `.gitconfig` that adapts to each machine:
+
+#### Step 1: Create the Template
+
+```bash
+# Create the templates directory
+mkdir -p ~/.config/config-manager/templates
+
+# Create a git config template
+cat > ~/.config/config-manager/templates/gitconfig.tmpl << 'EOF'
+[user]
+    name = {{ .user }}
+    email = {{ .user }}@{{ .email_domain }}
+[core]
+    editor = {{ .editor }}
+    autocrlf = input
+[push]
+    default = simple
+[pull]
+    rebase = false
+[alias]
+    st = status
+    co = checkout
+    br = branch
+    # Logged in as {{ .user }} on {{ .hostname }}
+EOF
+```
+
+#### Step 2: Set Up Variables
+
+Edit `~/.config/config-manager/config.json` to add global variables:
+
+```json
+{
+  "global_variables": {
+    "email_domain": "company.com"
+  },
+  "editor": "vim",
+  "shell": "zsh"
+}
+```
+
+#### Step 3: Add .gitconfig as a Managed Template
+
+1. In config-manager, press `a` to add your existing `.gitconfig`
+2. Edit the config to mark it as a template:
+
+```json
+{
+  "name": ".gitconfig",
+  "source": "git/gitconfig",
+  "target": "/home/username/.gitconfig",
+  "category": "git",
+  "template": true,
+  "variables": {}
+}
+```
+
+#### Step 4: Link the Template
+
+Press `l` in config-manager to link your .gitconfig.
+
+**What happens:**
+1. Config-manager reads `templates/gitconfig.tmpl`
+2. Fills in variables: `{{ .user }}` → your username, `{{ .email_domain }}` → "company.com"
+3. Creates the final file and symlinks it
+
+#### Step 5: Result
+
+Your final `~/.gitconfig` becomes:
+
+```ini
+[user]
+    name = john
+    email = john@company.com
+[core]
+    editor = vim
+    autocrlf = input
+[push]
+    default = simple
+[pull]
+    rebase = false
+[alias]
+    st = status
+    co = checkout
+    br = branch
+    # Logged in as john on johns-laptop
+```
+
+### Different Machines, Different Results
+
+**On your work laptop:**
+```ini
+email = john@company.com
+# Logged in as john on work-laptop
+```
+
+**On your personal machine** (after updating `email_domain` to `"gmail.com"`):
+```ini
+email = john@gmail.com  
+# Logged in as john on home-desktop
+```
+
+### Advanced Example: Environment-Specific Shell Config
+
+Create `~/.config/config-manager/templates/zshrc.tmpl`:
+
+```bash
+# {{ .user }}'s {{ .shell }} configuration on {{ .hostname }}
+export EDITOR="{{ .editor }}"
+export PATH="$HOME/bin:$PATH"
+
+# Work-specific settings
+{{ if eq .environment "work" }}
+export COMPANY_API_KEY="{{ .api_key }}"
+export WORK_PROJECT_DIR="$HOME/work"
+alias deploy="kubectl apply -f"
+{{ end }}
+
+# Personal settings  
+{{ if eq .environment "personal" }}
+export PERSONAL_PROJECT_DIR="$HOME/projects"
+alias blog="cd $PERSONAL_PROJECT_DIR/blog"
+{{ end }}
+
+# Common aliases
+alias ll="ls -la"
+alias ..="cd .."
+```
+
+**Work machine variables:**
+```json
+{
+  "global_variables": {
+    "environment": "work",
+    "api_key": "work-api-key-123"
+  }
+}
+```
+
+**Personal machine variables:**
+```json
+{
+  "global_variables": {
+    "environment": "personal"
+  }
+}
+```
 
 ### Available Variables
 
-Templates have access to several built-in variables:
+Templates automatically have access to:
 
 - `{{ .user }}` - Current username
 - `{{ .hostname }}` - Machine hostname  
 - `{{ .editor }}` - Configured editor
 - `{{ .shell }}` - Configured shell
+- Any variables from `global_variables` in config.json
+- Any file-specific variables
 
-### Custom Variables
+### Template Functions
 
-Add custom variables by editing `~/.config/config-manager/config.json`:
+Use Go template functions for dynamic content:
 
-```json
-{
-  "global_variables": {
-    "company": "mycompany",
-    "email_domain": "example.com"
-  }
-}
-```
+- `{{ if eq .environment "work" }}...{{ end }}` - Conditional sections
+- `{{ .user | upper }}` - Transform text to uppercase
+- `{{ .hostname | lower }}` - Transform text to lowercase
 
-### Using Templates
+### Template Workflow
 
-1. **Mark a file as a template** when adding it, or edit the config:
-   ```json
-   {
-     "name": ".gitconfig",
-     "template": true,
-     "variables": {
-       "company": "specific-company"
-     }
-   }
-   ```
+1. **Create template file** in `~/.config/config-manager/templates/`
+2. **Add variables** to `config.json` 
+3. **Mark file as template** when adding to config-manager
+4. **Link the template** - config-manager generates the final file
+5. **On new machines** - same template + different variables = different output
 
-2. **Link the template** - Config Manager will generate the final file using your variables
+This way, you maintain **one template** but get **machine-specific configs** automatically! Perfect for managing configurations across work laptops, personal machines, and servers.
 
 ## Configuration Structure
 
