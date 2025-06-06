@@ -295,42 +295,93 @@ Create `~/.config/config-manager/templates/zshrc.tmpl`:
 export EDITOR="{{ .editor }}"
 export PATH="$HOME/bin:$PATH"
 
-# Work-specific settings
-{{ if eq .environment "work" }}
-export COMPANY_API_KEY="{{ .api_key }}"
+# Work-specific settings (based on hostname)
+{{ if contains .hostname "work" }}
+export COMPANY_API_KEY="work-api-key-123"
 export WORK_PROJECT_DIR="$HOME/work"
 alias deploy="kubectl apply -f"
+alias vpn="sudo openvpn /etc/openvpn/work.conf"
 {{ end }}
 
-# Personal settings  
-{{ if eq .environment "personal" }}
+# Personal settings (based on hostname)
+{{ if contains .hostname "home" }}
 export PERSONAL_PROJECT_DIR="$HOME/projects"
 alias blog="cd $PERSONAL_PROJECT_DIR/blog"
+alias backup="rsync -av $HOME/Documents/ /backup/"
+{{ else if contains .hostname "macbook" }}
+export PERSONAL_PROJECT_DIR="$HOME/Code"
+alias blog="cd $PERSONAL_PROJECT_DIR/blog"
+# macOS-specific aliases
+alias brew-update="brew update && brew upgrade"
 {{ end }}
 
-# Common aliases
+# Common aliases for all machines
 alias ll="ls -la"
 alias ..="cd .."
+alias grep="grep --color=auto"
 ```
 
-**Work machine variables:**
-```json
-{
-  "global_variables": {
-    "environment": "work",
-    "api_key": "work-api-key-123"
-  }
-}
+And `~/.config/config-manager/templates/gitconfig.tmpl`:
+
+```bash
+[user]
+    name = {{ .user }}
+    email = {{ .user }}@{{ if contains .hostname "work" }}company.com{{ else }}gmail.com{{ end }}
+[core]
+    editor = {{ .editor }}
+    autocrlf = input
+
+# Work-specific git settings
+{{ if contains .hostname "work" }}
+[url "git@github.com:company/"]
+    insteadOf = https://github.com/company/
+[commit]
+    gpgsign = true
+{{ end }}
+
+# Personal git settings  
+{{ if not (contains .hostname "work") }}
+[github]
+    user = {{ .user }}
+{{ end }}
+
+[alias]
+    st = status
+    co = checkout
+    br = branch
 ```
 
-**Personal machine variables:**
-```json
-{
-  "global_variables": {
-    "environment": "personal"
-  }
-}
+**Why Hostname-Based Conditionals Work Best:**
+
+- ✅ **No circular dependencies** - hostname is always available when templates are processed
+- ✅ **Fully portable** - same config.json works on all machines
+- ✅ **Self-contained** - no external environment setup needed
+- ✅ **Immediate evaluation** - works reliably every time you link
+- ✅ **Predictable** - same hostname always produces the same result
+
+**Different machines automatically get different configs:**
+
+**Work laptop** (`work-laptop-01`):
+```bash
+export COMPANY_API_KEY="work-api-key-123"
+email = john@company.com
 ```
+
+**Personal MacBook** (`Johns-MacBook-Pro`):
+```bash
+export PERSONAL_PROJECT_DIR="$HOME/Code"
+email = john@gmail.com
+alias brew-update="brew update && brew upgrade"
+```
+
+**Home desktop** (`home-desktop`):
+```bash
+export PERSONAL_PROJECT_DIR="$HOME/projects"
+email = john@gmail.com
+alias backup="rsync -av $HOME/Documents/ /backup/"
+```
+
+This approach keeps your `config.json` completely portable while automatically adapting to each machine!
 
 ### Available Variables
 
