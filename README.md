@@ -336,12 +336,31 @@ alias ..="cd .."
 
 Templates automatically have access to:
 
-- `{{ .user }}` - Current username
-- `{{ .hostname }}` - Machine hostname  
-- `{{ .editor }}` - Configured editor
-- `{{ .shell }}` - Configured shell
+**Built-in System Variables:**
+- `{{ .user }}` - Current username (from `$USER` environment variable)
+- `{{ .hostname }}` - Machine hostname (from `os.Hostname()`)
+- `{{ .editor }}` - Your configured editor (from config-manager setup)
+- `{{ .shell }}` - Your configured shell (from config-manager setup)
+
+**Custom Variables:**
 - Any variables from `global_variables` in config.json
-- Any file-specific variables
+- Any file-specific variables in the file's `variables` section
+
+**Example of all variable types:**
+```bash
+# Built-in variables
+User: {{ .user }}           # → john
+Host: {{ .hostname }}       # → work-laptop  
+Editor: {{ .editor }}       # → vim
+Shell: {{ .shell }}         # → zsh
+
+# Custom global variables (from config.json global_variables)
+Email: {{ .email_domain }}  # → company.com
+Environment: {{ .environment }} # → work
+
+# File-specific variables (from file's variables section)
+API Key: {{ .api_key }}     # → secret-key-123
+```
 
 ### Template Functions
 
