@@ -183,7 +183,7 @@ Templates let you create **one config file** that automatically adapts to differ
 
 ### Complete Example: Git Configuration
 
-Let's create a `.gitconfig` that adapts to each machine:
+Let's create a `.gitconfig` that automatically adapts based on your machine's hostname:
 
 #### Step 1: Create the Template
 
@@ -191,37 +191,52 @@ Let's create a `.gitconfig` that adapts to each machine:
 # Create the templates directory
 mkdir -p ~/.config/config-manager/templates
 
-# Create a git config template
+# Create a git config template that uses hostname detection
 cat > ~/.config/config-manager/templates/gitconfig.tmpl << 'EOF'
 [user]
     name = {{ .user }}
-    email = {{ .user }}@{{ .email_domain }}
+    email = {{ .user }}@{{ if contains .hostname "work" }}company.com{{ else }}gmail.com{{ end }}
 [core]
     editor = {{ .editor }}
     autocrlf = input
+
+# Work-specific settings
+{{ if contains .hostname "work" }}
+[url "git@github.com:company/"]
+    insteadOf = https://github.com/company/
+[commit]
+    gpgsign = true
+[user]
+    signingkey = ABC123DEF456
+{{ end }}
+
+# Personal settings
+{{ if not (contains .hostname "work") }}
+[github]
+    user = {{ .user }}
+[pull]
+    rebase = true
+{{ end }}
+
 [push]
     default = simple
-[pull]
-    rebase = false
 [alias]
     st = status
     co = checkout
     br = branch
-    # Logged in as {{ .user }} on {{ .hostname }}
+    # Configuration for {{ .user }} on {{ .hostname }}
 EOF
 ```
 
-#### Step 2: Set Up Variables
+#### Step 2: No Variables Needed!
 
-Edit `~/.config/config-manager/config.json` to add global variables:
+Your `~/.config/config-manager/config.json` stays completely portable - no machine-specific variables needed:
 
 ```json
 {
-  "global_variables": {
-    "email_domain": "company.com"
-  },
   "editor": "vim",
-  "shell": "zsh"
+  "shell": "zsh",
+  "global_variables": {}
 }
 ```
 
@@ -247,13 +262,13 @@ Press `l` in config-manager to link your .gitconfig.
 
 **What happens:**
 1. Config-manager reads `templates/gitconfig.tmpl`
-2. Fills in variables: `{{ .user }}` → your username, `{{ .email_domain }}` → "company.com"
-3. Creates the final file and symlinks it
+2. Checks your hostname and applies appropriate conditionals
+3. Fills in built-in variables: `{{ .user }}`, `{{ .hostname }}`, `{{ .editor }}`
+4. Creates the final file and symlinks it
 
-#### Step 5: Result
+#### Step 5: Results on Different Machines
 
-Your final `~/.gitconfig` becomes:
-
+**On work laptop** (hostname: `work-laptop-01`):
 ```ini
 [user]
     name = john
@@ -261,30 +276,43 @@ Your final `~/.gitconfig` becomes:
 [core]
     editor = vim
     autocrlf = input
+[url "git@github.com:company/"]
+    insteadOf = https://github.com/company/
+[commit]
+    gpgsign = true
+[user]
+    signingkey = ABC123DEF456
 [push]
     default = simple
-[pull]
-    rebase = false
 [alias]
     st = status
     co = checkout
     br = branch
-    # Logged in as john on johns-laptop
+    # Configuration for john on work-laptop-01
 ```
 
-### Different Machines, Different Results
-
-**On your work laptop:**
+**On personal MacBook** (hostname: `Johns-MacBook-Pro`):
 ```ini
-email = john@company.com
-# Logged in as john on work-laptop
+[user]
+    name = john
+    email = john@gmail.com
+[core]
+    editor = vim
+    autocrlf = input
+[github]
+    user = john
+[pull]
+    rebase = true
+[push]
+    default = simple
+[alias]
+    st = status
+    co = checkout
+    br = branch
+    # Configuration for john on Johns-MacBook-Pro
 ```
 
-**On your personal machine** (after updating `email_domain` to `"gmail.com"`):
-```ini
-email = john@gmail.com  
-# Logged in as john on home-desktop
-```
+**The key insight:** Same template file, same config.json, but different outputs based on hostname detection!
 
 ### Advanced Example: Environment-Specific Shell Config
 
