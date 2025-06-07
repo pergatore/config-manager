@@ -176,9 +176,21 @@ func (m model) handleAdd() (tea.Model, tea.Cmd) {
 	// Use Gum to select files/directories to add
 	selectedPath, err := selectFileToAdd(m.config)
 	if err != nil {
-		m.message = fmt.Sprintf("Add failed: %v", err)
-		m.messageType = "error"
-		return m, nil
+		// Check if it was cancelled
+		if strings.Contains(err.Error(), "cancelled") {
+			m.message = "Add operation cancelled"
+			m.messageType = "warning"
+		} else {
+			m.message = fmt.Sprintf("Add failed: %v", err)
+			m.messageType = "error"
+		}
+		// Return with commands to hide cursor and refresh screen
+		return m, tea.Batch(
+			tea.HideCursor,
+			func() tea.Msg {
+				return tea.WindowSizeMsg{Width: m.width, Height: m.height}
+			},
+		)
 	}
 	
 	// Check if this file is already managed
@@ -197,7 +209,12 @@ func (m model) handleAdd() (tea.Model, tea.Cmd) {
 		if file.Target == targetPath {
 			m.message = fmt.Sprintf("File %s is already managed", selectedPath)
 			m.messageType = "warning"
-			return m, nil
+			return m, tea.Batch(
+				tea.HideCursor,
+				func() tea.Msg {
+					return tea.WindowSizeMsg{Width: m.width, Height: m.height}
+				},
+			)
 		}
 	}
 	
@@ -206,7 +223,12 @@ func (m model) handleAdd() (tea.Model, tea.Cmd) {
 	if err != nil {
 		m.message = fmt.Sprintf("Failed to create config entry: %v", err)
 		m.messageType = "error"
-		return m, nil
+		return m, tea.Batch(
+			tea.HideCursor,
+			func() tea.Msg {
+				return tea.WindowSizeMsg{Width: m.width, Height: m.height}
+			},
+		)
 	}
 	
 	m.config.Files = append(m.config.Files, newFile)
@@ -227,10 +249,13 @@ func (m model) handleAdd() (tea.Model, tea.Cmd) {
 	m.messageType = "success"
 	saveConfig(m.config)
 	
-	// Return a command that forces a complete screen refresh
-	return m, func() tea.Msg {
-		return tea.WindowSizeMsg{Width: m.width, Height: m.height}
-	}
+	// Return commands to hide cursor and refresh screen
+	return m, tea.Batch(
+		tea.HideCursor,
+		func() tea.Msg {
+			return tea.WindowSizeMsg{Width: m.width, Height: m.height}
+		},
+	)
 }
 
 func (m model) handleRemove() (tea.Model, tea.Cmd) {

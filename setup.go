@@ -309,7 +309,6 @@ func createConfigFromSetup(configDir, editor, shell string, selectedConfigs []st
 	// Create directories and save config
 	os.MkdirAll(configDir, 0755)
 	saveConfig(config)
-	createDefaultTemplates(config)
 	
 	fmt.Printf("\n🎉 Setup complete! Managing %d configurations.\n", successCount)
 	if successCount == 0 {

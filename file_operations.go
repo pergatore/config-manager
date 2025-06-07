@@ -182,50 +182,160 @@ func selectFileToAddText(config *Config) (string, error) {
 
 // Browse for a custom file or directory
 func browseForFile() (string, error) {
-	homeDir, _ := os.UserHomeDir()
+	// Check if gum is available for the selection, but use text input for path
+	if _, err := exec.LookPath("gum"); err != nil {
+		// Fallback to text input
+		return browseForFileText()
+	}
 	
-	// First ask if they want to browse for file or directory
-	typeCmd := exec.Command("gum", "choose", "--header", "What do you want to add?", "File", "Directory")
+	// Ask what type, but then use text input for the path
+	typeCmd := exec.Command("gum", "choose", "--header", "What do you want to add?", "File", "Directory", "Cancel")
+	typeCmd.Stdin = os.Stdin
+	typeCmd.Stderr = os.Stderr
+	
 	typeOutput, err := typeCmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("failed to get selection type: %v", err)
+		return "", fmt.Errorf("selection cancelled")
 	}
 	
 	selectionType := strings.TrimSpace(string(typeOutput))
-	if selectionType == "" {
-		return "", fmt.Errorf("no type selected")
+	if selectionType == "" || selectionType == "Cancel" {
+		return "", fmt.Errorf("selection cancelled")
 	}
 	
-	// Use gum file to browse
-	var cmd *exec.Cmd
-	if selectionType == "Directory" {
-		cmd = exec.Command("gum", "file", "--directory", "--height", "15", homeDir)
+	// Use gum input for the actual path (works better after gum choose)
+	return browseForFileGumInput(selectionType)
+}
+
+// Use gum input for path entry after type selection
+func browseForFileGumInput(fileType string) (string, error) {
+	var placeholder string
+	if fileType == "File" {
+		placeholder = ".gitconfig, .zshrc, ~/.vimrc, etc."
 	} else {
-		cmd = exec.Command("gum", "file", "--height", "15", homeDir)
+		placeholder = ".config/nvim, ~/.ssh, ~/Documents, etc."
 	}
 	
-	output, err := cmd.Output()
+	inputCmd := exec.Command("gum", "input", 
+		"--placeholder", placeholder,
+		"--prompt", fmt.Sprintf("Enter %s path: ", strings.ToLower(fileType)))
+	inputCmd.Stdin = os.Stdin
+	inputCmd.Stderr = os.Stderr
+	
+	output, err := inputCmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("file browser failed: %v", err)
+		return "", fmt.Errorf("input cancelled")
 	}
 	
-	selected := strings.TrimSpace(string(output))
-	if selected == "" {
-		return "", fmt.Errorf("no file/directory selected")
+	path := strings.TrimSpace(string(output))
+	if path == "" {
+		return "", fmt.Errorf("no path entered")
 	}
 	
-	// Convert to relative path from home directory if possible
-	if strings.HasPrefix(selected, homeDir) {
-		relative := strings.TrimPrefix(selected, homeDir)
-		if strings.HasPrefix(relative, "/") {
-			relative = relative[1:]
+	// Expand home directory if path starts with ~/
+	if strings.HasPrefix(path, "~/") {
+		homeDir, _ := os.UserHomeDir()
+		path = filepath.Join(homeDir, path[2:]) // Remove ~/ and join with home
+	}
+	
+	// Validate the path exists
+	var fullPath string
+	if strings.HasPrefix(path, "/") {
+		// Absolute path
+		fullPath = path
+	} else {
+		// Relative path - relative to home directory
+		homeDir, _ := os.UserHomeDir()
+		fullPath = filepath.Join(homeDir, path)
+	}
+	
+	if _, err := os.Stat(fullPath); os.IsNotExist(err) {
+		// Ask for confirmation using gum
+		confirmCmd := exec.Command("gum", "confirm", 
+			fmt.Sprintf("Path '%s' does not exist. Add anyway?", path))
+		confirmCmd.Stdin = os.Stdin
+		confirmCmd.Stderr = os.Stderr
+		
+		if err := confirmCmd.Run(); err != nil {
+			return "", fmt.Errorf("path does not exist and not confirmed")
 		}
-		if relative != "" {
-			selected = relative
+	}
+	
+	// Convert back to relative path if it was ~/something
+	homeDir, _ := os.UserHomeDir()
+	if strings.HasPrefix(fullPath, homeDir) {
+		relativePath := strings.TrimPrefix(fullPath, homeDir)
+		if strings.HasPrefix(relativePath, "/") {
+			relativePath = relativePath[1:]
+		}
+		if relativePath != "" {
+			return relativePath, nil
 		}
 	}
 	
-	return selected, nil
+	return path, nil
+}
+
+// Text-based file browsing fallback
+func browseForFileText() (string, error) {
+	fmt.Println("\n📁 Enter file or directory path")
+	fmt.Println("Examples of common config files:")
+	fmt.Println("  .gitconfig          (file)")
+	fmt.Println("  .zshrc              (file)")
+	fmt.Println("  .config/nvim        (directory)")
+	fmt.Println("  ~/.ssh              (directory)")
+	fmt.Println("  ~/Documents/configs (directory)")
+	fmt.Print("\nEnter path (relative to home, or use ~/): ")
+	
+	var path string
+	if _, err := fmt.Scanln(&path); err != nil {
+		return "", fmt.Errorf("invalid input")
+	}
+	
+	if strings.TrimSpace(path) == "" {
+		return "", fmt.Errorf("no path entered")
+	}
+	
+	// Expand home directory if path starts with ~/
+	if strings.HasPrefix(path, "~/") {
+		homeDir, _ := os.UserHomeDir()
+		path = filepath.Join(homeDir, path[2:]) // Remove ~/ and join with home
+	}
+	
+	// Determine full path for validation
+	var fullPath string
+	if strings.HasPrefix(path, "/") {
+		// Absolute path
+		fullPath = path
+	} else {
+		// Relative path - relative to home directory
+		homeDir, _ := os.UserHomeDir()
+		fullPath = filepath.Join(homeDir, path)
+	}
+	
+	// Validate the path exists
+	if _, err := os.Stat(fullPath); os.IsNotExist(err) {
+		fmt.Printf("Warning: %s does not exist yet. Add anyway? (y/N): ", path)
+		var confirm string
+		fmt.Scanln(&confirm)
+		if strings.ToLower(confirm) != "y" && strings.ToLower(confirm) != "yes" {
+			return "", fmt.Errorf("path does not exist and not confirmed")
+		}
+	}
+	
+	// Convert back to relative path if it was ~/something
+	homeDir, _ := os.UserHomeDir()
+	if strings.HasPrefix(fullPath, homeDir) {
+		relativePath := strings.TrimPrefix(fullPath, homeDir)
+		if strings.HasPrefix(relativePath, "/") {
+			relativePath = relativePath[1:]
+		}
+		if relativePath != "" {
+			return relativePath, nil
+		}
+	}
+	
+	return path, nil
 }
 
 // Create ConfigFile from selected path

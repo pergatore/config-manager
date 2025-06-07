@@ -37,7 +37,6 @@ func loadConfig() *Config {
 			
 			os.MkdirAll(configDir, 0755)
 			saveConfig(config)
-			createDefaultTemplates(config)
 		}
 		return config
 	}
