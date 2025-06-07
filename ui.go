@@ -13,7 +13,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// fileItem methods for bubbles/list interface
+// fileItem methods for bubbles/list interface (unchanged)
 func (i fileItem) FilterValue() string { return i.file.Name }
 
 func (i fileItem) Title() string {
@@ -30,13 +30,23 @@ func (i fileItem) Description() string {
 	return fmt.Sprintf("%s → %s", i.file.Target, i.file.Source)
 }
 
-// Initialize application
+// Initialize application with enhanced error handling
 func initialModel() model {
 	config := loadConfig()
 	
 	// Create initial file list with default dimensions
 	var fileList list.Model
 	if config != nil {
+		// Ensure directories exist
+		if err := config.EnsureDirectoriesExist(); err != nil {
+			fmt.Printf("Warning: failed to create directories: %v\n", err)
+		}
+		
+		// Create default templates if they don't exist
+		if err := createDefaultTemplates(config); err != nil {
+			fmt.Printf("Warning: failed to create default templates: %v", err)
+		}
+		
 		updateFileStatuses(config)
 		fileList = createFileList(config.Files, 76, 14) // Default size
 	} else {
@@ -54,7 +64,7 @@ func initialModel() model {
 	}
 }
 
-// Bubbletea interface methods
+// Bubbletea interface methods (Update method enhanced)
 func (m model) Init() tea.Cmd {
 	return nil
 }
@@ -80,7 +90,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case editorFinishedMsg:
 		// Handle the editor finishing
 		if msg.err != nil {
-			m.message = fmt.Sprintf("Failed to open editor: %v", msg.err)
+			if IsConfigError(msg.err) {
+				m.message = fmt.Sprintf("Editor error: %v", msg.err)
+			} else {
+				m.message = fmt.Sprintf("Failed to open editor: %v", msg.err)
+			}
 			m.messageType = "error"
 		} else {
 			// After editing, update file statuses and remove duplicates
@@ -100,10 +114,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.fileList = createFileList(m.config.Files, listWidth, listHeight)
 			
 			// Save config to persist any changes
-			saveConfig(m.config)
-			
-			m.message = fmt.Sprintf("Finished editing %s", msg.fileName)
-			m.messageType = "success"
+			if err := saveConfigSafe(m.config); err != nil {
+				m.message = fmt.Sprintf("Finished editing %s (warning: failed to save config: %v)", msg.fileName, err)
+				m.messageType = "warning"
+			} else {
+				m.message = fmt.Sprintf("Finished editing %s", msg.fileName)
+				m.messageType = "success"
+			}
 		}
 		
 	case tea.KeyMsg:
@@ -138,13 +155,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) View() string {
-	// Header
-	header := titleStyle.Render("Config Manager") + "\n\n"
+	// Header with stats
+	stats := m.config.GetStats()
+	header := titleStyle.Render("Config Manager") + 
+		fmt.Sprintf(" (%d files, %d linked, %d conflicts)", 
+			stats["total_files"], stats["linked_files"], stats["conflicted_files"]) + "\n\n"
 	
 	// Main content - the file list
 	content := m.fileList.View()
 	
-	// Status/message bar
+	// Status/message bar with enhanced styling
 	statusStyle := successStyle
 	if m.messageType == "error" {
 		statusStyle = errorStyle
@@ -171,51 +191,32 @@ func (m model) View() string {
 	return header + content + status + helpBar
 }
 
-// Event handlers
+// Enhanced event handlers with atomic operations and better error handling
+
 func (m model) handleAdd() (tea.Model, tea.Cmd) {
-	// Use Gum to select files/directories to add
+	// Use enhanced file selection
 	selectedPath, err := selectFileToAdd(m.config)
 	if err != nil {
-		// Check if it was cancelled
-		if strings.Contains(err.Error(), "cancelled") {
-			m.message = "Add operation cancelled"
-			m.messageType = "warning"
+		// Handle different error types appropriately
+		if IsConfigError(err) {
+			if strings.Contains(err.Error(), "cancelled") {
+				m.message = "Add operation cancelled"
+				m.messageType = "warning"
+			} else {
+				m.message = fmt.Sprintf("Add failed: %v", err)
+				m.messageType = "error"
+			}
 		} else {
 			m.message = fmt.Sprintf("Add failed: %v", err)
 			m.messageType = "error"
 		}
-		// Return with commands to hide cursor and refresh screen
+		
 		return m, tea.Batch(
 			tea.HideCursor,
 			func() tea.Msg {
 				return tea.WindowSizeMsg{Width: m.width, Height: m.height}
 			},
 		)
-	}
-	
-	// Check if this file is already managed
-	homeDir, _ := os.UserHomeDir()
-	var targetPath string
-	if strings.HasPrefix(selectedPath, "/") {
-		targetPath = selectedPath
-	} else if strings.HasPrefix(selectedPath, "~") {
-		targetPath = strings.Replace(selectedPath, "~", homeDir, 1)
-	} else {
-		targetPath = filepath.Join(homeDir, selectedPath)
-	}
-	
-	// Check for duplicates
-	for _, file := range m.config.Files {
-		if file.Target == targetPath {
-			m.message = fmt.Sprintf("File %s is already managed", selectedPath)
-			m.messageType = "warning"
-			return m, tea.Batch(
-				tea.HideCursor,
-				func() tea.Msg {
-					return tea.WindowSizeMsg{Width: m.width, Height: m.height}
-				},
-			)
-		}
 	}
 	
 	// Create ConfigFile from selected path
@@ -231,10 +232,21 @@ func (m model) handleAdd() (tea.Model, tea.Cmd) {
 		)
 	}
 	
-	m.config.Files = append(m.config.Files, newFile)
-	
-	// Update file statuses for all files
-	updateFileStatuses(m.config)
+	// Add file using the safe method
+	if err := m.config.AddConfigFile(newFile); err != nil {
+		if IsValidationError(err) {
+			m.message = fmt.Sprintf("Validation error: %v", err)
+		} else {
+			m.message = fmt.Sprintf("Failed to add file: %v", err)
+		}
+		m.messageType = "error"
+		return m, tea.Batch(
+			tea.HideCursor,
+			func() tea.Msg {
+				return tea.WindowSizeMsg{Width: m.width, Height: m.height}
+			},
+		)
+	}
 	
 	// Update the list items properly
 	fileItems := make([]list.Item, len(m.config.Files))
@@ -242,14 +254,17 @@ func (m model) handleAdd() (tea.Model, tea.Cmd) {
 		fileItems[i] = fileItem{file: file}
 	}
 	
-	// Use SetItems to update the list and then force a refresh
 	m.fileList.SetItems(fileItems)
 	
 	m.message = fmt.Sprintf("Added %s to configuration", newFile.Name)
 	m.messageType = "success"
-	saveConfig(m.config)
 	
-	// Return commands to hide cursor and refresh screen
+	// Save config safely
+	if err := saveConfigSafe(m.config); err != nil {
+		m.message += fmt.Sprintf(" (warning: failed to save: %v)", err)
+		m.messageType = "warning"
+	}
+	
 	return m, tea.Batch(
 		tea.HideCursor,
 		func() tea.Msg {
@@ -262,32 +277,33 @@ func (m model) handleRemove() (tea.Model, tea.Cmd) {
 	if selected := m.fileList.SelectedItem(); selected != nil {
 		selectedFileItem := selected.(fileItem)
 		
-		// Remove file from config
-		for i, file := range m.config.Files {
-			if file.Name == selectedFileItem.file.Name && file.Target == selectedFileItem.file.Target {
-				m.config.Files = append(m.config.Files[:i], m.config.Files[i+1:]...)
-				break
+		// Remove file using the safe method
+		if err := m.config.RemoveConfigFile(selectedFileItem.file.Target); err != nil {
+			m.message = fmt.Sprintf("Failed to remove %s: %v", selectedFileItem.file.Name, err)
+			m.messageType = "error"
+		} else {
+			// Update the list items properly
+			fileItems := make([]list.Item, len(m.config.Files))
+			for i, file := range m.config.Files {
+				fileItems[i] = fileItem{file: file}
+			}
+			
+			m.fileList.SetItems(fileItems)
+			
+			m.message = fmt.Sprintf("Removed %s from configuration", selectedFileItem.file.Name)
+			m.messageType = "success"
+			
+			// Save config safely
+			if err := saveConfigSafe(m.config); err != nil {
+				m.message += fmt.Sprintf(" (warning: failed to save: %v)", err)
+				m.messageType = "warning"
 			}
 		}
-		
-		// Update file statuses for remaining files
-		updateFileStatuses(m.config)
-		
-		// Update the list items properly
-		fileItems := make([]list.Item, len(m.config.Files))
-		for i, file := range m.config.Files {
-			fileItems[i] = fileItem{file: file}
-		}
-		
-		// Use SetItems to update the list
-		m.fileList.SetItems(fileItems)
-		
-		m.message = fmt.Sprintf("Removed %s from configuration", selectedFileItem.file.Name)
-		m.messageType = "success"
-		saveConfig(m.config)
+	} else {
+		m.message = "No file selected to remove"
+		m.messageType = "warning"
 	}
 	
-	// Return a command that forces a complete screen refresh
 	return m, func() tea.Msg {
 		return tea.WindowSizeMsg{Width: m.width, Height: m.height}
 	}
@@ -297,10 +313,14 @@ func (m model) handleLinkSelected() (tea.Model, tea.Cmd) {
 	if selected := m.fileList.SelectedItem(); selected != nil {
 		selectedFileItem := selected.(fileItem)
 		
-		// Link just the selected file
+		// Use atomic linking operation
 		msg, err := linkConfigFile(m.config, &selectedFileItem.file)
 		if err != nil {
-			m.message = fmt.Sprintf("Error linking %s: %v", selectedFileItem.file.Name, err)
+			if IsConfigError(err) {
+				m.message = fmt.Sprintf("Link error for %s: %v", selectedFileItem.file.Name, err)
+			} else {
+				m.message = fmt.Sprintf("Error linking %s: %v", selectedFileItem.file.Name, err)
+			}
 			m.messageType = "error"
 		} else {
 			// Update file statuses
@@ -312,7 +332,6 @@ func (m model) handleLinkSelected() (tea.Model, tea.Cmd) {
 				fileItems[i] = fileItem{file: file}
 			}
 			
-			// Use SetItems to update the list
 			m.fileList.SetItems(fileItems)
 			
 			m.message = msg
@@ -323,17 +342,20 @@ func (m model) handleLinkSelected() (tea.Model, tea.Cmd) {
 		m.messageType = "warning"
 	}
 	
-	// Return a command that forces a complete screen refresh
 	return m, func() tea.Msg {
 		return tea.WindowSizeMsg{Width: m.width, Height: m.height}
 	}
 }
 
 func (m model) handleLinkAll() (tea.Model, tea.Cmd) {
-	// Apply all configurations (create symlinks)
+	// Use atomic operations for linking all configs
 	messages, err := applyAllConfigs(m.config)
 	if err != nil {
-		m.message = fmt.Sprintf("Error linking configs: %v", err)
+		if IsConfigError(err) || IsValidationError(err) {
+			m.message = fmt.Sprintf("Configuration error: %v", err)
+		} else {
+			m.message = fmt.Sprintf("Error linking configs: %v", err)
+		}
 		m.messageType = "error"
 	} else {
 		// Update file statuses
@@ -345,17 +367,19 @@ func (m model) handleLinkAll() (tea.Model, tea.Cmd) {
 			fileItems[i] = fileItem{file: file}
 		}
 		
-		// Use SetItems to update the list
 		m.fileList.SetItems(fileItems)
 		
 		// Show summary of what was done
 		if len(messages) > 0 {
-			// Show just the count and first few actions
 			summary := fmt.Sprintf("✅ Successfully processed %d files", len(m.config.Files))
 			if len(messages) <= 3 {
-				summary += ": " + messages[0]
+				if len(messages) == 1 {
+					summary = messages[0]
+				} else {
+					summary += ": " + strings.Join(messages[:2], ", ")
+				}
 			} else {
-				summary += fmt.Sprintf(" (%s and %d more)", messages[0], len(messages)-1)
+				summary += fmt.Sprintf(" (%d operations completed)", len(messages))
 			}
 			m.message = summary
 		} else {
@@ -364,7 +388,6 @@ func (m model) handleLinkAll() (tea.Model, tea.Cmd) {
 		m.messageType = "success"
 	}
 	
-	// Return a command that forces a complete screen refresh
 	return m, func() tea.Msg {
 		return tea.WindowSizeMsg{Width: m.width, Height: m.height}
 	}
@@ -374,7 +397,7 @@ func (m model) handleEdit() (tea.Model, tea.Cmd) {
 	if selected := m.fileList.SelectedItem(); selected != nil {
 		selectedFileItem := selected.(fileItem)
 		
-		// Check if we need to handle directory file selection first
+		// Use enhanced editor opening with better error handling
 		sourcePath := filepath.Join(m.config.DotfilesDir, selectedFileItem.file.Source)
 		
 		// Check if the source path exists
@@ -386,18 +409,17 @@ func (m model) handleEdit() (tea.Model, tea.Cmd) {
 		
 		// Check if it's a directory
 		if info, err := os.Stat(sourcePath); err == nil && info.IsDir() {
-			// It's a directory - handle file selection first
+			// Handle directory selection first
 			selectedFile, err := handleDirectorySelection(sourcePath)
 			if err != nil {
-				// Check if it was cancelled
-				if strings.Contains(err.Error(), "cancelled") {
+				if IsConfigError(err) && strings.Contains(err.Error(), "cancelled") {
 					m.message = "Edit operation cancelled"
 					m.messageType = "warning"
 				} else {
 					m.message = fmt.Sprintf("File selection failed: %v", err)
 					m.messageType = "error"
 				}
-				// Return with commands to hide cursor and refresh screen
+				
 				return m, tea.Batch(
 					tea.HideCursor,
 					func() tea.Msg {
@@ -406,21 +428,15 @@ func (m model) handleEdit() (tea.Model, tea.Cmd) {
 				)
 			}
 			
-			// Now open the selected file from the directory
+			// Open the selected file from the directory
 			fullPath := filepath.Join(sourcePath, selectedFile)
 			return m, tea.ExecProcess(createSingleFileEditorCommand(m.config.Editor, fullPath), func(err error) tea.Msg {
-				if err != nil {
-					return editorFinishedMsg{err: err, fileName: selectedFile}
-				}
-				return editorFinishedMsg{err: nil, fileName: selectedFile}
+				return editorFinishedMsg{err: err, fileName: selectedFile}
 			})
 		} else {
-			// It's a single file - open it directly
+			// Single file - open directly
 			return m, tea.ExecProcess(createSingleFileEditorCommand(m.config.Editor, sourcePath), func(err error) tea.Msg {
-				if err != nil {
-					return editorFinishedMsg{err: err, fileName: selectedFileItem.file.Name}
-				}
-				return editorFinishedMsg{err: nil, fileName: selectedFileItem.file.Name}
+				return editorFinishedMsg{err: err, fileName: selectedFileItem.file.Name}
 			})
 		}
 	} else {
@@ -430,7 +446,40 @@ func (m model) handleEdit() (tea.Model, tea.Cmd) {
 	}
 }
 
-// Handle directory file selection (this runs before the TUI suspends)
+func (m model) handleBackup() (tea.Model, tea.Cmd) {
+	// Create enhanced backup
+	backupDir := createBackupWithStats(m.config)
+	if backupDir == "" {
+		m.message = "Failed to create backup"
+		m.messageType = "error"
+	} else {
+		stats := m.config.GetStats()
+		m.message = fmt.Sprintf("Backed up %d files to %s", stats["total_files"], filepath.Base(backupDir))
+		m.messageType = "success"
+	}
+	
+	return m, nil
+}
+
+// Enhanced backup creation with statistics
+func createBackupWithStats(config *Config) string {
+	backupDir := fmt.Sprintf("%s/backups/%s", config.ConfigDir, time.Now().Format("2006-01-02_15-04-05"))
+	backedUp := createBackupInDir(config, backupDir)
+	
+	if backedUp == 0 {
+		return ""
+	}
+	
+	return backupDir
+}
+
+// Message type for when editor finishes (unchanged)
+type editorFinishedMsg struct {
+	err      error
+	fileName string
+}
+
+// Enhanced directory selection handling
 func handleDirectorySelection(dirPath string) (string, error) {
 	// Find all editable files in the directory recursively
 	var editableFiles []string
@@ -456,24 +505,19 @@ func handleDirectorySelection(dirPath string) (string, error) {
 	})
 	
 	if err != nil {
-		return "", fmt.Errorf("failed to scan directory: %v", err)
+		return "", NewConfigError("scan directory", dirPath, err)
 	}
 	
 	if len(editableFiles) == 0 {
-		return "", fmt.Errorf("no editable files found in directory")
+		return "", NewConfigError("find editable files", dirPath, 
+			fmt.Errorf("no editable files found in directory"))
 	}
 	
-	// Use the existing file selection logic
+	// Use the existing file selection logic with enhanced error handling
 	return selectFileToEdit(editableFiles)
 }
 
-// Message type for when editor finishes
-type editorFinishedMsg struct {
-	err      error
-	fileName string
-}
-
-// Create command for editing a single file
+// Create command for editing a single file (unchanged)
 func createSingleFileEditorCommand(editor, filePath string) *exec.Cmd {
 	// Handle different editors that might need special arguments
 	switch editor {
@@ -489,22 +533,7 @@ func createSingleFileEditorCommand(editor, filePath string) *exec.Cmd {
 	}
 }
 
-func (m model) handleBackup() (tea.Model, tea.Cmd) {
-	// Create backup
-	backupDir := createBackup(m.config)
-	m.message = fmt.Sprintf("Backed up files to %s", backupDir)
-	m.messageType = "success"
-	
-	return m, nil
-}
-
-func createBackup(config *Config) string {
-	backupDir := fmt.Sprintf("%s/backups/%s", config.ConfigDir, time.Now().Format("2006-01-02_15-04-05"))
-	createBackupInDir(config, backupDir)
-	return backupDir
-}
-
-// Helper function to create a file list
+// Enhanced file list creation with better sizing
 func createFileList(files []ConfigFile, width, height int) list.Model {
 	fileItems := make([]list.Item, len(files))
 	for i, file := range files {
@@ -526,4 +555,48 @@ func createFileList(files []ConfigFile, width, height int) list.Model {
 	fileList.SetFilteringEnabled(false) // Disable filtering to avoid interference
 	
 	return fileList
+}
+
+// Enhanced error checking for editable files
+func isEditableFile(filename string) bool {
+	// Skip binary files and temporary files
+	if strings.HasSuffix(filename, ".lock") ||
+		strings.HasSuffix(filename, ".tmp") ||
+		strings.HasSuffix(filename, ".log") ||
+		strings.HasSuffix(filename, ".pid") ||
+		strings.HasSuffix(filename, ".sock") ||
+		strings.HasSuffix(filename, ".swp") ||
+		strings.HasSuffix(filename, ".swo") ||
+		strings.HasSuffix(filename, "~") {
+		return false
+	}
+	
+	// Include common config file extensions and files without extensions
+	editableExts := []string{
+		".conf", ".config", ".cfg", ".ini", ".yaml", ".yml", ".toml", ".json",
+		".sh", ".bash", ".zsh", ".fish", ".vim", ".lua", ".py", ".rb", ".js", ".ts",
+		".md", ".txt", ".rc", ".profile", ".aliases", ".env", ".gitignore",
+		".tmpl", ".template", ".tpl", ".service", ".timer", ".desktop",
+		".xml", ".html", ".css", ".scss", ".less", ".properties",
+	}
+	
+	// Files without extensions are often config files
+	if !strings.Contains(filename, ".") {
+		return true
+	}
+	
+	// Check known config file extensions
+	lowerFilename := strings.ToLower(filename)
+	for _, ext := range editableExts {
+		if strings.HasSuffix(lowerFilename, ext) {
+			return true
+		}
+	}
+	
+	// Files starting with dot are often config files (but exclude some system files)
+	if strings.HasPrefix(filename, ".") && !isSystemFile(filename) {
+		return true
+	}
+	
+	return false
 }
